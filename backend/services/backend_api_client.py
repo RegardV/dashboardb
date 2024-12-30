@@ -1,9 +1,10 @@
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import requests
 import streamlit as st
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
+from requests.auth import HTTPBasicAuth
 
 
 class BackendAPIClient:
@@ -20,10 +21,11 @@ class BackendAPIClient:
             cls._shared_instance = BackendAPIClient(*args, **kwargs)
         return cls._shared_instance
 
-    def __init__(self, host: str = "localhost", port: int = 8000):
+    def __init__(self, host: str = "localhost", port: int = 8000, username: str = "admin", password: str = "admin"):
         self.host = host
         self.port = port
         self.base_url = f"http://{self.host}:{self.port}"
+        self.auth = HTTPBasicAuth(username, password)
 
     def post(self, endpoint: str, payload: Optional[Dict] = None, params: Optional[Dict] = None):
         """
@@ -34,7 +36,7 @@ class BackendAPIClient:
         :return:
         """
         url = f"{self.base_url}/{endpoint}"
-        response = requests.post(url, json=payload, params=params)
+        response = requests.post(url, json=payload, params=params, auth=self.auth)
         return self._process_response(response)
 
     def get(self, endpoint: str):
@@ -44,12 +46,15 @@ class BackendAPIClient:
         :return:
         """
         url = f"{self.base_url}/{endpoint}"
-        response = requests.get(url)
+        response = requests.get(url, auth=self.auth)
         return self._process_response(response)
 
     @staticmethod
     def _process_response(response):
-        if response.status_code == 400:
+        if response.status_code == 401:
+            st.error("You are not authorized to access Backend API. Please check your credentials.")
+            return
+        elif response.status_code == 400:
             st.error(response.json()["detail"])
             return
         return response.json()
@@ -170,6 +175,21 @@ class BackendAPIClient:
         url = "delete-controller-config"
         return self.post(url, params={"config_name": controller_name})
 
+    def delete_script_config(self, script_name: str):
+        """Delete a script configuration."""
+        url = "delete-script-config"
+        return self.post(url, params={"script_name": script_name})
+
+    def delete_all_controller_configs(self):
+        """Delete all controller configurations."""
+        endpoint = "delete-all-controller-configs"
+        return self.post(endpoint)
+
+    def delete_all_script_configs(self):
+        """Delete all script configurations."""
+        endpoint = "delete-all-script-configs"
+        return self.post(endpoint)
+
     def get_real_time_candles(self, connector: str, trading_pair: str, interval: str, max_records: int):
         """Get candles data."""
         endpoint = "real-time-candles"
@@ -185,7 +205,7 @@ class BackendAPIClient:
         """Get historical candles data."""
         endpoint = "historical-candles"
         payload = {
-            "connector": connector,
+            "connector_name": connector,
             "trading_pair": trading_pair,
             "interval": interval,
             "start_time": start_time,
@@ -286,3 +306,60 @@ class BackendAPIClient:
         """Get account state history."""
         endpoint = "account-state-history"
         return self.get(endpoint)
+
+    def get_performance_results(self, executors: List[Dict[str, Any]]):
+        if not isinstance(executors, list) or len(executors) == 0:
+            raise ValueError("Executors must be a non-empty list of dictionaries")
+        # Check if all elements in executors are dictionaries
+        if not all(isinstance(executor, dict) for executor in executors):
+            raise ValueError("All elements in executors must be dictionaries")
+        endpoint = "get-performance-results"
+        payload = {
+            "executors": executors,
+        }
+
+        performance_results = self.post(endpoint, payload=payload)
+        if "error" in performance_results:
+            raise Exception(performance_results["error"])
+        if "detail" in performance_results:
+            raise Exception(performance_results["detail"])
+        if "processed_data" not in performance_results:
+            data = None
+        else:
+            data = pd.DataFrame(performance_results["processed_data"])
+        if "executors" not in performance_results:
+            executors = []
+        else:
+            executors = [ExecutorInfo(**executor) for executor in performance_results["executors"]]
+        return {
+            "processed_data": data,
+            "executors": executors,
+            "results": performance_results["results"]
+        }
+
+    def list_databases(self):
+        """Get databases list."""
+        endpoint = "list-databases"
+        return self.post(endpoint)
+
+    def read_databases(self, db_paths: List[str]):
+        """Read databases."""
+        endpoint = "read-databases"
+        return self.post(endpoint, payload=db_paths)
+
+    def create_checkpoint(self, db_names: List[str]):
+        """Create a checkpoint."""
+        endpoint = "create-checkpoint"
+        return self.post(endpoint, payload=db_names)
+
+    def list_checkpoints(self, full_path: bool):
+        """List checkpoints."""
+        endpoint = "list-checkpoints"
+        params = {"full_path": full_path}
+        return self.post(endpoint, params=params)
+
+    def load_checkpoint(self, checkpoint_path: str):
+        """Load a checkpoint."""
+        endpoint = "load-checkpoint"
+        params = {"checkpoint_path": checkpoint_path}
+        return self.post(endpoint, params=params)

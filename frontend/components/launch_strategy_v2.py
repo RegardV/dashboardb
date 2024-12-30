@@ -32,6 +32,10 @@ class LaunchStrategyV2(Dashboard.Item):
         self._bot_name = None
         self._image_name = "hummingbot/hummingbot:latest"
         self._credentials = "master_account"
+        self._max_global_drawdown = None
+        self._max_controller_drawdown = None
+        self._rebalance_interval = None
+        self._asset_to_rebalance = "USDT"
 
     def _set_bot_name(self, event):
         self._bot_name = event.target.value
@@ -48,36 +52,66 @@ class LaunchStrategyV2(Dashboard.Item):
     def _handle_row_selection(self, params, _):
         self._controller_config_selected = [param + ".yml" for param in params]
 
-    def launch_new_bot(self):
-        if self._bot_name and self._image_name and len(self._controller_config_selected) > 0:
-            start_time_str = time.strftime("%Y.%m.%d_%H.%M")
-            bot_name = f"{self._bot_name}-{start_time_str}"
-            script_config = {
-                "name": bot_name,
-                "content": {
-                    "markets": {},
-                    "candles_config": [],
-                    "controllers_config": self._controller_config_selected,
-                    "config_update_interval": 10,
-                    "script_file_name": "v2_with_controllers.py",
-                    "time_to_cash_out": None,
-                }
-            }
+    def _set_max_global_drawdown(self, event):
+        self._max_global_drawdown = event.target.value
 
-            self._backend_api_client.add_script_config(script_config)
-            deploy_config = {
-                "instance_name": bot_name,
-                "script": "v2_with_controllers.py",
-                "script_config": bot_name + ".yml",
-                "image": self._image_name,
-                "credentials_profile": self._credentials,
+    def _set_max_controller_drawdown(self, event):
+        self._max_controller_drawdown = event.target.value
+
+    def _set_rebalance_interval(self, event):
+        self._rebalance_interval = event.target.value
+
+    def _set_asset_to_rebalance(self, event):
+        self._asset_to_rebalance = event.target.value
+
+    def launch_new_bot(self):
+        if not self._bot_name:
+            st.warning("You need to define the bot name.")
+            return
+        if not self._image_name:
+            st.warning("You need to select the hummingbot image.")
+            return
+        if not self._controller_config_selected or len(self._controller_config_selected) == 0:
+            st.warning("You need to select the controllers configs. Please select at least one controller "
+                       "config by clicking on the checkbox.")
+            return
+        start_time_str = time.strftime("%Y.%m.%d_%H.%M")
+        bot_name = f"{self._bot_name}-{start_time_str}"
+        script_config = {
+            "name": bot_name,
+            "content": {
+                "markets": {},
+                "candles_config": [],
+                "controllers_config": self._controller_config_selected,
+                "config_update_interval": 10,
+                "script_file_name": "v2_with_controllers.py",
+                "time_to_cash_out": None,
             }
-            self._backend_api_client.create_hummingbot_instance(deploy_config)
-            with st.spinner('Starting Bot... This process may take a few seconds'):
-                time.sleep(3)
-        else:
-            st.warning("You need to define the bot name and select the controllers configs "
-                       "that you want to deploy.")
+        }
+        if self._max_global_drawdown:
+            script_config["content"]["max_global_drawdown"] = self._max_global_drawdown
+        if self._max_controller_drawdown:
+            script_config["content"]["max_controller_drawdown"] = self._max_controller_drawdown
+        if self._rebalance_interval:
+            script_config["content"]["rebalance_interval"] = self._rebalance_interval
+            if self._asset_to_rebalance and "USD" in self._asset_to_rebalance:
+                script_config["content"]["asset_to_rebalance"] = self._asset_to_rebalance
+            else:
+                st.error("You need to define the asset to rebalance in USD like token.")
+                return
+
+        self._backend_api_client.delete_all_script_configs()
+        self._backend_api_client.add_script_config(script_config)
+        deploy_config = {
+            "instance_name": bot_name,
+            "script": "v2_with_controllers.py",
+            "script_config": bot_name + ".yml",
+            "image": self._image_name,
+            "credentials_profile": self._credentials,
+        }
+        self._backend_api_client.create_hummingbot_instance(deploy_config)
+        with st.spinner('Starting Bot... This process may take a few seconds'):
+            time.sleep(3)
 
     def delete_selected_configs(self):
         if self._controller_config_selected:
@@ -96,10 +130,10 @@ class LaunchStrategyV2(Dashboard.Item):
                 mui.Typography("🎛️ Bot Configuration", variant="h5")
 
             with mui.Grid(container=True, spacing=2, sx={"padding": "10px 15px 10px 15px"}):
-                with mui.Grid(item=True, xs=4):
+                with mui.Grid(item=True, xs=3):
                     mui.TextField(label="Instance Name", variant="outlined", onChange=lazy(self._set_bot_name),
                                   sx={"width": "100%"})
-                with mui.Grid(item=True, xs=4):
+                with mui.Grid(item=True, xs=3):
                     available_images = self._backend_api_client.get_available_images("hummingbot")
                     with mui.FormControl(variant="standard", sx={"width": "100%"}):
                         mui.FormHelperText("Available Images")
@@ -107,7 +141,6 @@ class LaunchStrategyV2(Dashboard.Item):
                                         variant="standard", onChange=lazy(self._set_image_name)):
                             for image in available_images:
                                 mui.MenuItem(image, value=image)
-                with mui.Grid(item=True, xs=4):
                     available_credentials = self._backend_api_client.get_accounts()
                     with mui.FormControl(variant="standard", sx={"width": "100%"}):
                         mui.FormHelperText("Credentials")
@@ -115,6 +148,22 @@ class LaunchStrategyV2(Dashboard.Item):
                                         variant="standard", onChange=lazy(self._set_credentials)):
                             for master_config in available_credentials:
                                 mui.MenuItem(master_config, value=master_config)
+                with mui.Grid(item=True, xs=3):
+                    with mui.FormControl(variant="standard", sx={"width": "100%"}):
+                        mui.FormHelperText("Risk Management")
+                        mui.TextField(label="Max Global Drawdown (%)", variant="outlined", type="number",
+                                      onChange=lazy(self._set_max_global_drawdown), sx={"width": "100%"})
+                        mui.TextField(label="Max Controller Drawdown (%)", variant="outlined", type="number",
+                                      onChange=lazy(self._set_max_controller_drawdown), sx={"width": "100%"})
+
+                with mui.Grid(item=True, xs=3):
+                    with mui.FormControl(variant="standard", sx={"width": "100%"}):
+                        mui.FormHelperText("Rebalance Configuration")
+                        mui.TextField(label="Rebalance Interval (minutes)", variant="outlined", type="number",
+                                      onChange=lazy(self._set_rebalance_interval), sx={"width": "100%"})
+                        mui.TextField(label="Asset to Rebalance", variant="outlined",
+                                      onChange=lazy(self._set_asset_to_rebalance),
+                                      sx={"width": "100%"}, default="USDT")
                 all_controllers_config = self._backend_api_client.get_all_controllers_config()
                 data = []
                 for config in all_controllers_config:
@@ -135,7 +184,8 @@ class LaunchStrategyV2(Dashboard.Item):
                     ts_text = str(trailing_stop["activation_price"]) + " / " + str(trailing_stop["trailing_delta"])
                     data.append({
                         "id": config["id"], "config_base": config_base, "version": version,
-                        "controller_name": config["controller_name"], "controller_type": config["controller_type"],
+                        "controller_name": config["controller_name"],
+                        "controller_type": config.get("controller_type", "generic"),
                         "connector_name": connector_name, "trading_pair": trading_pair,
                         "total_amount_quote": total_amount_quote, "max_loss_quote": total_amount_quote * stop_loss / 2,
                         "stop_loss": stop_loss, "take_profit": take_profit,
